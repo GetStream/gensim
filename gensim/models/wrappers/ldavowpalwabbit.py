@@ -7,48 +7,34 @@
 """
 Python wrapper around Vowpal Wabbit's Latent Dirichlet Allocation (LDA)
 implementation [1]_.
-
 This uses Matt Hoffman's online algorithm, for LDA [2]_, i.e. the same
 algorithm that Gensim's LdaModel is based on.
-
 Note: Currently working and tested with Vowpal Wabbit 7.10. Vowpal Wabbit's
 API isn't currently stable, so this may or may not work with older/newer
 versions. The aim will be to ensure this wrapper always works with the latest
 release of Vowpal Wabbit.
-
 Tested with python 2.6, 2.7, and 3.4.
-
 Example:
-
     >>> # train model
     >>> lda = gensim.models.wrappers.LdaVowpalWabbit('/usr/local/bin/vw',
                                                      corpus=corpus,
                                                      num_topics=20,
                                                      id2word=dictionary)
-
     >>> # update an existing model
     >>> lda.update(another_corpus)
-
     >>> # get topic probability distributions for a document
     >>> print(lda[doc_bow])
-
     >>> # print 10 topics
     >>> print(lda.print_topics())
-
     >>> # save/load the trained model:
-
     >>> lda.save('vw_lda.model')
     >>> lda = gensim.models.wrappers.LdaVowpalWabbit.load('vw_lda.model')
-
     >>> # get bound on log perplexity for given test set
     >>> print(lda.log_perpexity(test_corpus))
-
 Vowpal Wabbit works on files, so this wrapper maintains a temporary directory
 while it's around, reading/writing there as necessary.
-
 Output from Vowpal Wabbit is logged at either INFO or DEBUG levels, enable
 logging to view this.
-
 .. [1] https://github.com/JohnLangford/vowpal_wabbit/wiki
 .. [2] http://www.cs.princeton.edu/~mdhoffma/
 """
@@ -78,57 +64,44 @@ class LdaVowpalWabbit(utils.SaveLoad):
     def __init__(self, vw_path, corpus=None, num_topics=100, id2word=None,
                  chunksize=256, passes=1, alpha=0.1, eta=0.1, decay=0.5,
                  offset=1, gamma_threshold=0.001, random_seed=None,
-                 cleanup_files=True, tmp_prefix='tmp'):
+                 cleanup_files=True, decay_learning_rate=1, tmp_prefix='tmp'):
         """`vw_path` is the path to Vowpal Wabbit's 'vw' executable.
-
         `corpus` is an iterable training corpus. If given, training will
         start immediately, otherwise the model is left untrained (presumably
         because you want to call `update()` manually).
-
         `num_topics` is the number of requested latent topics to be extracted
         from the training corpus.
         Corresponds to VW's '--lda <num_topics>' argument.
-
         `id2word` is a mapping from word ids (integers) to words (strings).
         It is used to determine the vocabulary size, as well as for debugging
         and topic printing.
-
         `chunksize` is the number of documents examined in each batch.
         Corresponds to VW's '--minibatch <batch_size>' argument.
-
         `passes` is the number of passes over the dataset to use.
         Corresponds to VW's '--passes <passes>' argument.
-
         `alpha` is a float effecting sparsity of per-document topic weights.
         This is applied symmetrically, and should be set higher to when
         documents are thought to look more similar.
         Corresponds to VW's '--lda_alpha <alpha>' argument.
-
         `eta` is a float which affects the sparsity of topic distributions.
         This is applied symmetrically, and should be set higher when topics
         are thought to look more similar.
         Corresponds to VW's '--lda_rho <rho>' argument.
-
         `decay` learning rate decay, affects how quickly learnt values
         are forgotten. Should be set to a value between 0.5 and 1.0 to
         guarantee convergence.
         Corresponds to VW's '--power_t <tau>' argument.
-
         `offset` integer learning offset, set to higher values to slow down
         learning on early iterations of the algorithm.
         Corresponds to VW's '--initial_t <tau>' argument.
-
         `gamma_threshold` affects when learning loop will be broken out of,
         higher values will result in earlier loop completion.
         Corresponds to VW's '--epsilon <eps>' argument.
-
         `random_seed` sets Vowpal Wabbit's random seed when learning.
         Corresponds to VW's '--random_seed <seed>' argument.
-
         `cleanup_files` whether or not to delete temporary directory and files
         used by this wrapper. Setting to False can be useful for debugging,
         or for re-using Vowpal Wabbit files elsewhere.
-
         `tmp_prefix` used to prefix temporary working directory name.
         """
         # default parameters are taken from Vowpal Wabbit's defaults, and
@@ -160,6 +133,7 @@ class LdaVowpalWabbit(utils.SaveLoad):
         self.passes = passes
         self.alpha = alpha
         self.eta = eta
+        self.decay_learning_rate = decay_learning_rate
         self.gamma_threshold = gamma_threshold
         self.offset = offset
         self.decay = decay
@@ -196,7 +170,7 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
         _run_vw_command(cmd)
 
-        # ensure that future updates of this model use correct offset
+        # ensure that future updates of this model use correct offset
         self.offset += corpus_size
 
     def update(self, corpus):
@@ -215,12 +189,11 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
         _run_vw_command(cmd)
 
-        # ensure that future updates of this model use correct offset
+        # ensure that future updates of this model use correct offset
         self.offset += corpus_size
 
     def log_perplexity(self, chunk):
         """Return per-word lower bound on log perplexity.
-
         Also logs this and perplexity at INFO level.
         """
         vw_data = self._predict(chunk)[1]
@@ -327,11 +300,9 @@ class LdaVowpalWabbit(utils.SaveLoad):
         """Get list of command line arguments for running prediction."""
         cmd = [self.vw_path,
                '--testonly', # don't update model with this data
-               '--lda', str(self.num_topics),
                '--lda_D', str(corpus_size),
                '-i', self._model_filename, # load existing binary model
                '-d', self._corpus_filename,
-               '-b', str(_bit_length(self.num_terms)),
                '--learning_rate', '0', # possibly not needed, but harmless
                '-p', self._predict_filename]
 
@@ -342,7 +313,6 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
     def _get_vw_train_command(self, corpus_size, update=False):
         """Get list of command line arguments for running model training.
-
         If 'update' is set to True, this specifies that we're further training
         an existing model.
         """
@@ -351,12 +321,10 @@ class LdaVowpalWabbit(utils.SaveLoad):
                '--power_t', str(self.decay),
                '--initial_t', str(self.offset),
                '--minibatch', str(self.chunksize),
-               '-b', str(_bit_length(self.num_terms)),
                '--lda_D', str(corpus_size),
                '--passes', str(self.passes),
+               '--decay_learning_rate', str(self.decay_learning_rate),
                '--cache_file', self._cache_filename,
-               '--lda_alpha', str(self.alpha),
-               '--lda_rho', str(self.eta),
                '--lda_epsilon', str(self.gamma_threshold),
                '--readable_model', self._topics_filename,
                '-k', # clear cache
@@ -365,8 +333,11 @@ class LdaVowpalWabbit(utils.SaveLoad):
         if update:
             cmd.extend(['-i', self._model_filename])
         else:
-            # this param is read from model file if updating
-            cmd.extend(['--lda', str(self.num_topics)])
+            # these params are read from model file if updating
+            cmd.extend(['--lda', str(self.num_topics),
+                        '-b', str(_bit_length(self.num_terms)),
+                        '--lda_alpha', str(self.alpha),
+                        '--lda_rho', str(self.eta)])
 
         if self.random_seed is not None:
             cmd.extend(['--random_seed', str(self.random_seed)])
@@ -379,7 +350,6 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
     def _load_vw_topics(self):
         """Read topics file generated by Vowpal Wabbit, convert to numpy array.
-
         Output consists of many header lines, followed by a number of lines
         of:
         <word_id> <topic_1_gamma> <topic_2_gamma> ...
@@ -388,13 +358,15 @@ class LdaVowpalWabbit(utils.SaveLoad):
                              dtype=numpy.float32)
 
         with utils.smart_open(self._topics_filename) as topics_file:
-            found_options = False
+            found_data = False
 
             for line in topics_file:
-                if not found_options:
-                    if line.startswith(b'options:'):
-                        found_options = True
-                    continue
+                # look for start of data
+                if not found_data:
+                    if line.startswith(b'0 ') and ':' not in line:
+                        found_data = True
+                    else:
+                        continue
 
                 fields = line.split()
                 word_id = int(fields[0])
@@ -417,7 +389,6 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
     def _predict(self, chunk):
         """Run given chunk of documents against currently trained model.
-
         Returns a tuple of prediction matrix and Vowpal Wabbit data.
         """
         corpus_size = write_corpus_as_vw(chunk, self._corpus_filename)
@@ -491,11 +462,9 @@ class LdaVowpalWabbit(utils.SaveLoad):
 
 def corpus_to_vw(corpus):
     """Iterate over corpus, yielding lines in Vowpal Wabbit format.
-
     For LDA, this consists of each document on a single line consisting of
     space separated lists of <word_id>:<count>. Each line starts with a '|'
     character.
-
     E.g.:
     | 4:7 14:1 22:8 6:3
     | 14:22 22:4 0:1 1:3
@@ -510,7 +479,6 @@ def corpus_to_vw(corpus):
 
 def write_corpus_as_vw(corpus, filename):
     """Iterate over corpus, writing each document as a line to given file.
-
     Returns the number of lines written.
     """
     LOG.debug("Writing corpus to: %s", filename)
@@ -526,7 +494,6 @@ def write_corpus_as_vw(corpus, filename):
 
 def _parse_vw_output(text):
     """Get dict of useful fields from Vowpal Wabbit's output.
-
     Currently returns field 'average_loss', which is a lower bound on mean
     per-word log-perplexity (i.e. same as the value LdaModel.bound() returns).
     """
